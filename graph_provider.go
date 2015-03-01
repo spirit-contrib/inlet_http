@@ -7,6 +7,6 @@ import (
 )
 
 type GraphProvider interface {
-	SetGraph(apiName string, addr []spirit.MessageAddress) GraphProvider
+	SetGraph(name string, addr []spirit.MessageAddress) GraphProvider
 	GetGraph(r *http.Request) (address []spirit.MessageAddress, err error)
 }

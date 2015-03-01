@@ -9,7 +9,7 @@ import (
 )
 
 type ClassicRequester struct {
-	payloadRespChans map[string]chan *spirit.Payload
+	payloadRespChans map[string]chan spirit.Payload
 	senderFactory    spirit.MessageSenderFactory
 	callbackAddr     spirit.MessageAddress
 
@@ -18,7 +18,7 @@ type ClassicRequester struct {
 
 func NewClassicRequester() Requester {
 	return &ClassicRequester{
-		payloadRespChans: make(map[string]chan *spirit.Payload),
+		payloadRespChans: make(map[string]chan spirit.Payload),
 		senderFactory:    spirit.NewDefaultMessageSenderFactory(),
 	}
 }
@@ -38,7 +38,7 @@ func (p *ClassicRequester) GetMessageSenderFactory() spirit.MessageSenderFactory
 	return p.senderFactory
 }
 
-func (p *ClassicRequester) Request(addrs []spirit.MessageAddress, payload spirit.Payload, response chan *spirit.Payload) (msgId string, err error) {
+func (p *ClassicRequester) Request(addrs []spirit.MessageAddress, payload spirit.Payload, response chan spirit.Payload) (msgId string, err error) {
 	graph := spirit.MessageGraph{}
 
 	lenAddr := graph.AddAddress(addrs...)
@@ -66,7 +66,7 @@ func (p *ClassicRequester) Request(addrs []spirit.MessageAddress, payload spirit
 	return
 }
 
-func (p *ClassicRequester) addMessageChan(messageId string, respChan chan *spirit.Payload) {
+func (p *ClassicRequester) addMessageChan(messageId string, respChan chan spirit.Payload) {
 	p.locker.Lock()
 	defer p.locker.Unlock()
 	p.payloadRespChans[messageId] = respChan
@@ -80,14 +80,14 @@ func (p *ClassicRequester) removeMessageChan(messageId string) {
 	}
 }
 
-func (p *ClassicRequester) getMessageChan(messageId string) (respChan chan *spirit.Payload, exist bool) {
+func (p *ClassicRequester) getMessageChan(messageId string) (respChan chan spirit.Payload, exist bool) {
 	p.locker.Lock()
 	defer p.locker.Unlock()
 	respChan, exist = p.payloadRespChans[messageId]
 	return
 }
 
-func (p *ClassicRequester) OnMessageReceived(payload *spirit.Payload) (interface{}, error) {
+func (p *ClassicRequester) OnMessageReceived(payload spirit.Payload) (interface{}, error) {
 	var err error
 	msgId := payload.Id()
 	if msgId == "" {
@@ -95,7 +95,7 @@ func (p *ClassicRequester) OnMessageReceived(payload *spirit.Payload) (interface
 		return nil, err
 	}
 
-	var payloadChan chan *spirit.Payload
+	var payloadChan chan spirit.Payload
 
 	exist := false
 
@@ -105,6 +105,7 @@ func (p *ClassicRequester) OnMessageReceived(payload *spirit.Payload) (interface
 	}
 
 	payloadChan <- payload
+	//TODO add timeout
 
 	return nil, nil
 }

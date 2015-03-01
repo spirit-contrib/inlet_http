@@ -13,4 +13,6 @@ var (
 
 	ERR_READ_HTTP_BODY_FAILED      = errors.TN(INLET_HTTP_ERR_NS, 4, "read http body failed,error: {{.err}}")
 	ERR_UNMARSHAL_HTTP_BODY_FAILED = errors.TN(INLET_HTTP_ERR_NS, 5, "unmarshal http body failed, error: {{.err}}")
+
+	ERR_PARSE_COMMAND_TO_OBJECT_FAILED = errors.TN(INLET_HTTP_ERR_NS, 6, "parse command {{.cmd}} error, error: {{.err}}")
 )
