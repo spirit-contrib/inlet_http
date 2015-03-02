@@ -240,8 +240,8 @@ func (p *InletHTTP) writeCookiesAndHeaders(payload spirit.Payload, w http.Respon
 	}
 }
 
-func (p *InletHTTP) CallBack(payload *spirit.Payload) (result interface{}, err error) {
-	p.OnMessageResponse(*payload)
+func (p *InletHTTP) CallBack(payload spirit.Payload) (result interface{}, err error) {
+	p.OnMessageResponse(payload)
 	return nil, nil
 }
 
