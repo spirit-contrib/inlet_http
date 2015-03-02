@@ -1,7 +1,6 @@
 package inlet_http
 
 import (
-	"encoding/json"
 	"io/ioutil"
 	"net/http"
 
@@ -26,6 +25,7 @@ type NameValue struct {
 
 type InletHTTPResponseHandler func(spirit.Payload, http.ResponseWriter, *http.Request)
 type InletHTTPErrorResponseHandler func(error, http.ResponseWriter, *http.Request)
+type InletHTTPRequestDecoder func([]byte) (map[string]interface{}, error)
 
 type option func(*InletHTTP)
 
@@ -35,11 +35,18 @@ type InletHTTP struct {
 	graphProvider  GraphProvider
 	respHandler    InletHTTPResponseHandler
 	errRespHandler InletHTTPErrorResponseHandler
+	requestDecoder InletHTTPRequestDecoder
 }
 
 func (p *InletHTTP) Option(opts ...option) {
 	for _, opt := range opts {
 		opt(p)
+	}
+}
+
+func SetRequestDecoder(decoder InletHTTPRequestDecoder) option {
+	return func(f *InletHTTP) {
+		f.requestDecoder = decoder
 	}
 }
 
@@ -105,6 +112,10 @@ func (p *InletHTTP) Run(handlers ...martini.Handler) {
 		panic("error response handler is nil")
 	}
 
+	if p.requestDecoder == nil {
+		panic("request encoder is nil")
+	}
+
 	m := martini.Classic()
 
 	if handlers != nil {
@@ -132,9 +143,9 @@ func (p *InletHTTP) handler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var mapContent map[string]interface{} = make(map[string]interface{})
+	var mapContent map[string]interface{}
 
-	if err = json.Unmarshal(binBody, &mapContent); err != nil {
+	if mapContent, err = p.requestDecoder(binBody); err != nil {
 		err = ERR_UNMARSHAL_HTTP_BODY_FAILED.New(errors.Params{"err": err})
 		logs.Error(err)
 		p.errRespHandler(err, w, r)
