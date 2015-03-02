@@ -3,11 +3,16 @@ package inlet_http
 import (
 	"io/ioutil"
 	"net/http"
+	"time"
 
 	"github.com/go-martini/martini"
 	"github.com/gogap/errors"
 	"github.com/gogap/logs"
 	"github.com/gogap/spirit"
+)
+
+const (
+	REQUEST_TIMEOUT = 30 * time.Second
 )
 
 const (
@@ -36,6 +41,7 @@ type InletHTTP struct {
 	respHandler    InletHTTPResponseHandler
 	errRespHandler InletHTTPErrorResponseHandler
 	requestDecoder InletHTTPRequestDecoder
+	timeout        time.Duration
 }
 
 func (p *InletHTTP) Option(opts ...option) {
@@ -80,6 +86,12 @@ func SetErrorResponseHandler(handler InletHTTPErrorResponseHandler) option {
 	}
 }
 
+func SetTimeout(millisecond int64) option {
+	return func(f *InletHTTP) {
+		f.timeout = time.Duration(millisecond)
+	}
+}
+
 func NewInletHTTP(opts ...option) *InletHTTP {
 	inletHTTP := new(InletHTTP)
 	inletHTTP.Option(opts...)
@@ -114,6 +126,13 @@ func (p *InletHTTP) Run(handlers ...martini.Handler) {
 
 	if p.requestDecoder == nil {
 		panic("request encoder is nil")
+	}
+
+	if p.config.Timeout > 0 {
+		p.timeout = time.Millisecond * time.Duration(p.config.Timeout)
+		p.requester.SetTimeout(p.timeout)
+	} else {
+		p.timeout = REQUEST_TIMEOUT
 	}
 
 	m := martini.Classic()
@@ -157,17 +176,20 @@ func (p *InletHTTP) handler(w http.ResponseWriter, r *http.Request) {
 	payload.SetContent(mapContent)
 
 	responseChan := make(chan spirit.Payload)
+	errChan := make(chan error)
 	defer close(responseChan)
+	defer close(errChan)
 
-	var addrs []spirit.MessageAddress
-	if addrs, err = p.graphProvider.GetGraph(r); err != nil {
+	var graph spirit.MessageGraph
+	if graph, err = p.graphProvider.GetGraph(r); err != nil {
 		logs.Error(err)
 		p.errRespHandler(err, w, r)
 		return
 	}
 
 	msgId := ""
-	msgId, err = p.requester.Request(addrs, payload, responseChan)
+
+	msgId, err = p.requester.Request(graph, payload, responseChan, errChan)
 	if err != nil {
 		logs.Error(err)
 		p.errRespHandler(err, w, r)
@@ -178,11 +200,25 @@ func (p *InletHTTP) handler(w http.ResponseWriter, r *http.Request) {
 
 	var respPayload spirit.Payload
 
-	respPayload = <-responseChan
-	//TODO add recv timeout
+	select {
+	case respPayload = <-responseChan:
+		{
+			p.writeCookiesAndHeaders(respPayload, w, r)
+			p.respHandler(respPayload, w, r)
+		}
+	case err = <-errChan:
+		{
+			p.writeCookiesAndHeaders(respPayload, w, r)
+			p.errRespHandler(err, w, r)
+		}
+	case <-time.After(time.Duration(p.timeout)):
+		{
+			err = ERR_REQUEST_TIMEOUT.New(errors.Params{"msgId": msgId})
+			p.errRespHandler(err, w, r)
+		}
+	}
 
-	p.writeCookiesAndHeaders(respPayload, w, r)
-	p.respHandler(respPayload, w, r)
+	return
 }
 
 func (p *InletHTTP) writeCookiesAndHeaders(payload spirit.Payload, w http.ResponseWriter, r *http.Request) {
@@ -245,8 +281,11 @@ func (p *InletHTTP) CallBack(payload spirit.Payload) (result interface{}, err er
 	return nil, nil
 }
 
+func (p *InletHTTP) Error(payload spirit.Payload) (result interface{}, err error) {
+	p.OnMessageResponse(payload)
+	return nil, nil
+}
+
 func (p *InletHTTP) OnMessageResponse(payload spirit.Payload) {
-	if _, e := p.requester.OnMessageReceived(payload); e != nil {
-		logs.Error(e)
-	}
+	p.requester.OnMessageReceived(payload)
 }

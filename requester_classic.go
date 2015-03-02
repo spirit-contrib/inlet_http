@@ -1,30 +1,35 @@
 package inlet_http
 
 import (
-	"strconv"
 	"sync"
+	"time"
 
 	"github.com/gogap/errors"
+	"github.com/gogap/logs"
 	"github.com/gogap/spirit"
 )
 
+type respChan struct {
+	payloadRespChan chan spirit.Payload
+	errRespChan     chan error
+}
+
 type ClassicRequester struct {
-	payloadRespChans map[string]chan spirit.Payload
-	senderFactory    spirit.MessageSenderFactory
-	callbackAddr     spirit.MessageAddress
+	respChans map[string]respChan
+
+	senderFactory spirit.MessageSenderFactory
+
+	timeout time.Duration
 
 	locker sync.Mutex
 }
 
 func NewClassicRequester() Requester {
 	return &ClassicRequester{
-		payloadRespChans: make(map[string]chan spirit.Payload),
-		senderFactory:    spirit.NewDefaultMessageSenderFactory(),
+		respChans:     make(map[string]respChan),
+		senderFactory: spirit.NewDefaultMessageSenderFactory(),
+		timeout:       REQUEST_TIMEOUT,
 	}
-}
-
-func (p *ClassicRequester) Init(addr spirit.MessageAddress) {
-	p.callbackAddr = addr
 }
 
 func (p *ClassicRequester) SetMessageSenderFactory(factory spirit.MessageSenderFactory) {
@@ -38,13 +43,15 @@ func (p *ClassicRequester) GetMessageSenderFactory() spirit.MessageSenderFactory
 	return p.senderFactory
 }
 
-func (p *ClassicRequester) Request(addrs []spirit.MessageAddress, payload spirit.Payload, response chan spirit.Payload) (msgId string, err error) {
-	graph := spirit.MessageGraph{}
+func (p *ClassicRequester) SetTimeout(timeout time.Duration) {
+	p.timeout = timeout
+}
 
-	lenAddr := graph.AddAddress(addrs...)
+func (p *ClassicRequester) GetTimeout() time.Duration {
+	return p.timeout
+}
 
-	graph[strconv.Itoa(lenAddr+1)] = p.callbackAddr
-
+func (p *ClassicRequester) Request(graph spirit.MessageGraph, payload spirit.Payload, payloadRespChan chan spirit.Payload, errResp chan error) (msgId string, err error) {
 	var msg spirit.ComponentMessage
 	if msg, err = spirit.NewComponentMessage(graph, payload); err != nil {
 		return
@@ -59,55 +66,92 @@ func (p *ClassicRequester) Request(addrs []spirit.MessageAddress, payload spirit
 
 	msgId = msg.Id()
 
-	p.addMessageChan(msgId, response)
+	p.addMessageChan(msgId, payloadRespChan, errResp)
 
 	err = sender.Send(firstAddress.Url, msg)
 
 	return
 }
 
-func (p *ClassicRequester) addMessageChan(messageId string, respChan chan spirit.Payload) {
+func (p *ClassicRequester) addMessageChan(messageId string, payloadRespChan chan spirit.Payload, errChan chan error) {
 	p.locker.Lock()
 	defer p.locker.Unlock()
-	p.payloadRespChans[messageId] = respChan
+	p.respChans[messageId] = respChan{payloadRespChan: payloadRespChan, errRespChan: errChan}
 }
 
 func (p *ClassicRequester) removeMessageChan(messageId string) {
 	p.locker.Lock()
 	defer p.locker.Unlock()
-	if _, exist := p.payloadRespChans[messageId]; exist {
-		delete(p.payloadRespChans, messageId)
+	if _, exist := p.respChans[messageId]; exist {
+		delete(p.respChans, messageId)
 	}
 }
 
-func (p *ClassicRequester) getMessageChan(messageId string) (respChan chan spirit.Payload, exist bool) {
+func (p *ClassicRequester) getMessageChan(messageId string) (payloadRespChan chan spirit.Payload, errRespChan chan error, exist bool) {
 	p.locker.Lock()
 	defer p.locker.Unlock()
-	respChan, exist = p.payloadRespChans[messageId]
+	var rChan respChan
+	if rChan, exist = p.respChans[messageId]; exist {
+		payloadRespChan = rChan.payloadRespChan
+		errRespChan = rChan.errRespChan
+	}
+
 	return
 }
 
-func (p *ClassicRequester) OnMessageReceived(payload spirit.Payload) (interface{}, error) {
+func (p *ClassicRequester) OnMessageReceived(payload spirit.Payload) {
 	var err error
 	msgId := payload.Id()
 	if msgId == "" {
 		err = ERR_MESSAGE_ID_IS_EMPTY.New()
-		return nil, err
+		logs.Error(err)
+		return
 	}
 
 	var payloadChan chan spirit.Payload
 
 	exist := false
 
-	if payloadChan, exist = p.getMessageChan(msgId); !exist {
+	if payloadChan, _, exist = p.getMessageChan(msgId); !exist {
 		err = ERR_PAYLOAD_CHAN_NOT_EXIST.New(errors.Params{"id": msgId})
-		return nil, err
+		logs.Error(err)
+		return
 	}
 
-	payloadChan <- payload
-	//TODO add timeout
+	select {
+	case payloadChan <- payload:
+	case <-time.After(time.Duration(p.timeout)):
+	}
 
-	return nil, nil
+	return
+}
+
+func (p *ClassicRequester) OnMessageError(payload spirit.Payload) {
+	var err error
+
+	msgId := payload.Id()
+	if msgId == "" {
+		err = ERR_MESSAGE_ID_IS_EMPTY.New()
+		logs.Error(err)
+		return
+	}
+
+	var errRespChan chan error
+
+	exist := false
+
+	if _, errRespChan, exist = p.getMessageChan(msgId); !exist {
+		err = ERR_PAYLOAD_CHAN_NOT_EXIST.New(errors.Params{"id": msgId})
+		logs.Error(err)
+		return
+	}
+
+	select {
+	case errRespChan <- err:
+	case <-time.After(time.Duration(p.timeout)):
+	}
+
+	return
 }
 
 func (p *ClassicRequester) OnMessageProcessed(messageId string) {
