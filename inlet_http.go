@@ -28,6 +28,7 @@ type NameValue struct {
 	Value string `json:"value"`
 }
 
+type InletHTTPRequestPayloadHook func(*http.Request, []byte, *spirit.Payload)
 type InletHTTPResponseHandler func(spirit.Payload, http.ResponseWriter, *http.Request)
 type InletHTTPErrorResponseHandler func(error, http.ResponseWriter, *http.Request)
 type InletHTTPRequestDecoder func([]byte) (map[string]interface{}, error)
@@ -41,12 +42,19 @@ type InletHTTP struct {
 	respHandler    InletHTTPResponseHandler
 	errRespHandler InletHTTPErrorResponseHandler
 	requestDecoder InletHTTPRequestDecoder
+	payloadHook    InletHTTPRequestPayloadHook
 	timeout        time.Duration
 }
 
 func (p *InletHTTP) Option(opts ...option) {
 	for _, opt := range opts {
 		opt(p)
+	}
+}
+
+func SetRequestPayloadHook(hook InletHTTPRequestPayloadHook) option {
+	return func(f *InletHTTP) {
+		f.payloadHook = hook
 	}
 }
 
@@ -187,6 +195,10 @@ func (p *InletHTTP) handler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if p.payloadHook != nil {
+		p.payloadHook(r, binBody, &payload)
+	}
+
 	msgId := ""
 
 	msgId, err = p.requester.Request(graph, payload, responseChan, errChan)
@@ -276,16 +288,16 @@ func (p *InletHTTP) writeCookiesAndHeaders(payload spirit.Payload, w http.Respon
 	}
 }
 
-func (p *InletHTTP) CallBack(payload spirit.Payload) (result interface{}, err error) {
+func (p *InletHTTP) CallBack(payload *spirit.Payload) (result interface{}, err error) {
 	p.OnMessageResponse(payload)
 	return nil, nil
 }
 
-func (p *InletHTTP) Error(payload spirit.Payload) (result interface{}, err error) {
+func (p *InletHTTP) Error(payload *spirit.Payload) (result interface{}, err error) {
 	p.OnMessageResponse(payload)
 	return nil, nil
 }
 
-func (p *InletHTTP) OnMessageResponse(payload spirit.Payload) {
-	p.requester.OnMessageReceived(payload)
+func (p *InletHTTP) OnMessageResponse(payload *spirit.Payload) {
+	p.requester.OnMessageReceived(*payload)
 }
