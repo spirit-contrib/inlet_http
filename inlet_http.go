@@ -195,6 +195,16 @@ func (p *InletHTTP) handler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	cookies := map[string]string{}
+	reqCookies := r.Cookies()
+	if reqCookies != nil && len(reqCookies) > 0 {
+		for _, cookie := range reqCookies {
+			cookies[cookie.Name] = cookie.Value
+		}
+	}
+
+	payload.SetContext(CTX_HTTP_COOKIES, cookies)
+
 	if p.payloadHook != nil {
 		p.payloadHook(r, binBody, &payload)
 	}
