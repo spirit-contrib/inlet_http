@@ -8,5 +8,5 @@ import (
 
 type GraphProvider interface {
 	SetGraph(name string, graph spirit.MessageGraph) GraphProvider
-	GetGraph(r *http.Request) (graph spirit.MessageGraph, err error)
+	GetGraph(r *http.Request, body []byte) (graphs map[string]spirit.MessageGraph, err error)
 }

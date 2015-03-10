@@ -3,6 +3,8 @@ package inlet_http
 import (
 	"io/ioutil"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-martini/martini"
@@ -28,10 +30,10 @@ type NameValue struct {
 	Value string `json:"value"`
 }
 
-type InletHTTPRequestPayloadHook func(*http.Request, []byte, *spirit.Payload)
-type InletHTTPResponseHandler func(spirit.Payload, http.ResponseWriter, *http.Request)
-type InletHTTPErrorResponseHandler func(error, http.ResponseWriter, *http.Request)
-type InletHTTPRequestDecoder func([]byte) (map[string]interface{}, error)
+type InletHTTPRequestPayloadHook func(r *http.Request, graphName string, body []byte, payload *spirit.Payload) (err error)
+type InletHTTPResponseHandler func(payloads map[string]spirit.Payload, errs map[string]error, w http.ResponseWriter, r *http.Request)
+type InletHTTPErrorResponseHandler func(err error, w http.ResponseWriter, r *http.Request)
+type InletHTTPRequestDecoder func(body []byte) (map[string]interface{}, error)
 
 type option func(*InletHTTP)
 
@@ -44,6 +46,7 @@ type InletHTTP struct {
 	requestDecoder InletHTTPRequestDecoder
 	payloadHook    InletHTTPRequestPayloadHook
 	timeout        time.Duration
+	timeoutHeader  string
 }
 
 func (p *InletHTTP) Option(opts ...option) {
@@ -97,6 +100,12 @@ func SetErrorResponseHandler(handler InletHTTPErrorResponseHandler) option {
 func SetTimeout(millisecond int64) option {
 	return func(f *InletHTTP) {
 		f.timeout = time.Duration(millisecond)
+	}
+}
+
+func SetTimeoutHeader(header string) option {
+	return func(f *InletHTTP) {
+		f.timeoutHeader = strings.TrimSpace(header)
 	}
 }
 
@@ -179,17 +188,8 @@ func (p *InletHTTP) handler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	payload := spirit.Payload{}
-
-	payload.SetContent(mapContent)
-
-	responseChan := make(chan spirit.Payload)
-	errChan := make(chan error)
-	defer close(responseChan)
-	defer close(errChan)
-
-	var graph spirit.MessageGraph
-	if graph, err = p.graphProvider.GetGraph(r); err != nil {
+	var graphs map[string]spirit.MessageGraph
+	if graphs, err = p.graphProvider.GetGraph(r, binBody); err != nil {
 		logs.Error(err)
 		p.errRespHandler(err, w, r)
 		return
@@ -203,42 +203,112 @@ func (p *InletHTTP) handler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	payload.SetContext(CTX_HTTP_COOKIES, cookies)
+	payloads := map[string]*spirit.Payload{}
 
-	if p.payloadHook != nil {
-		p.payloadHook(r, binBody, &payload)
+	for graphName, _ := range graphs {
+
+		payload := new(spirit.Payload)
+		payload.SetContent(mapContent)
+		payload.SetContext(CTX_HTTP_COOKIES, cookies)
+
+		if p.payloadHook != nil {
+			if e := p.payloadHook(r, graphName, binBody, payload); e != nil {
+				p.errRespHandler(e, w, r)
+				return
+			}
+		}
+
+		payloads[graphName] = payload
 	}
 
-	msgId := ""
+	responseChan := make(chan spirit.Payload)
+	errorChan := make(chan error)
 
-	msgId, err = p.requester.Request(graph, payload, responseChan, errChan)
-	if err != nil {
-		logs.Error(err)
-		p.errRespHandler(err, w, r)
-		return
-	}
+	defer close(responseChan)
+	defer close(errorChan)
 
-	defer p.requester.OnMessageProcessed(msgId)
+	timeout := p.timeout
 
-	var respPayload spirit.Payload
-
-	select {
-	case respPayload = <-responseChan:
-		{
-			p.writeCookiesAndHeaders(respPayload, w, r)
-			p.respHandler(respPayload, w, r)
-		}
-	case err = <-errChan:
-		{
-			p.writeCookiesAndHeaders(respPayload, w, r)
-			p.errRespHandler(err, w, r)
-		}
-	case <-time.After(time.Duration(p.timeout)):
-		{
-			err = ERR_REQUEST_TIMEOUT.New(errors.Params{"msgId": msgId})
-			p.errRespHandler(err, w, r)
+	if p.timeoutHeader != "" {
+		if strTimeout := r.Header.Get(p.timeoutHeader); strTimeout != "" {
+			if intTimeout, e := strconv.Atoi(strTimeout); e != nil {
+				e = ERR_REQUEST_TIMEOUT_VALUE_FORMAT_WRONG.New(errors.Params{"value": strTimeout})
+				logs.Warn(e)
+			} else {
+				timeout = time.Duration(intTimeout) * time.Millisecond
+			}
 		}
 	}
+
+	sendPayloadFunc := func(requester Requester, graphName string, graph spirit.MessageGraph, payload spirit.Payload, responseChan chan spirit.Payload, errorChan chan error, timeout time.Duration) {
+		defer func() {
+			if err := recover(); err != nil {
+				return
+			}
+		}()
+
+		respChan := make(chan spirit.Payload)
+		errChan := make(chan error)
+		defer close(respChan)
+		defer close(errChan)
+
+		msgId, err := requester.Request(graph, payload, respChan, errChan)
+		if err != nil {
+			errChan <- err
+			return
+		}
+
+		defer requester.OnMessageProcessed(msgId)
+
+		select {
+		case respPayload := <-respChan:
+			{
+				responseChan <- respPayload
+			}
+		case respErr := <-errChan:
+			{
+				errorChan <- respErr
+			}
+		case <-time.After(time.Duration(timeout)):
+			{
+				err = ERR_REQUEST_TIMEOUT.New(errors.Params{"graphName": graphName, "msgId": msgId})
+				errorChan <- err
+			}
+		}
+	}
+
+	for graphName, payload := range payloads {
+		graph, _ := graphs[graphName]
+
+		go sendPayloadFunc(p.requester, graphName, graph, *payload, responseChan, errorChan, timeout)
+	}
+
+	respPayloads := map[string]spirit.Payload{}
+	errs := map[string]error{}
+
+	for graphName, _ := range payloads {
+		select {
+		case respPayload := <-responseChan:
+			{
+				respPayloads[graphName] = respPayload
+			}
+		case respErr := <-errorChan:
+			{
+				errs[graphName] = respErr
+			}
+		case <-time.After(time.Duration(timeout) + time.Second):
+			{
+				err = ERR_REQUEST_TIMEOUT.New(errors.Params{"graphName": graphName})
+				errs[graphName] = err
+			}
+		}
+	}
+
+	for _, respPayload := range respPayloads {
+		p.writeCookiesAndHeaders(respPayload, w, r)
+	}
+
+	p.respHandler(respPayloads, errs, w, r)
 
 	return
 }

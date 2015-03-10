@@ -15,5 +15,8 @@ var (
 	ERR_UNMARSHAL_HTTP_BODY_FAILED = errors.TN(INLET_HTTP_ERR_NS, 5, "unmarshal http body failed, error: {{.err}}")
 
 	ERR_PARSE_COMMAND_TO_OBJECT_FAILED = errors.TN(INLET_HTTP_ERR_NS, 6, "parse command {{.cmd}} error, error: {{.err}}")
-	ERR_REQUEST_TIMEOUT                = errors.TN(INLET_HTTP_ERR_NS, 7, "request timeout, message Id: {{.msgId}}")
+	ERR_REQUEST_TIMEOUT                = errors.TN(INLET_HTTP_ERR_NS, 7, "request timeout, graph: {{.graphName}}, message id: {{.msgId}}")
+	ERR_GATHER_RESPONSE_TIMEOUT        = errors.TN(INLET_HTTP_ERR_NS, 8, "gather response timeout, graph: {{.graphName}}")
+
+	ERR_REQUEST_TIMEOUT_VALUE_FORMAT_WRONG = errors.TN(INLET_HTTP_ERR_NS, 9, "request timeout value format wrong, value: {{.value}}")
 )
