@@ -13,6 +13,12 @@ import (
 	"github.com/gogap/spirit"
 )
 
+type GraphResponse struct {
+	GraphName   string
+	RespPayload spirit.Payload
+	Error       error
+}
+
 const (
 	REQUEST_TIMEOUT = 30 * time.Second
 )
@@ -31,7 +37,7 @@ type NameValue struct {
 }
 
 type InletHTTPRequestPayloadHook func(r *http.Request, graphName string, body []byte, payload *spirit.Payload) (err error)
-type InletHTTPResponseHandler func(payloads map[string]spirit.Payload, errs map[string]error, w http.ResponseWriter, r *http.Request)
+type InletHTTPResponseHandler func(graphsResponse map[string]GraphResponse, w http.ResponseWriter, r *http.Request)
 type InletHTTPErrorResponseHandler func(err error, w http.ResponseWriter, r *http.Request)
 type InletHTTPRequestDecoder func(body []byte) (map[string]interface{}, error)
 
@@ -221,11 +227,9 @@ func (p *InletHTTP) handler(w http.ResponseWriter, r *http.Request) {
 		payloads[graphName] = payload
 	}
 
-	responseChan := make(chan spirit.Payload)
-	errorChan := make(chan error)
+	responseChan := make(chan GraphResponse)
 
 	defer close(responseChan)
-	defer close(errorChan)
 
 	timeout := p.timeout
 
@@ -240,7 +244,7 @@ func (p *InletHTTP) handler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	sendPayloadFunc := func(requester Requester, graphName string, graph spirit.MessageGraph, payload spirit.Payload, responseChan chan spirit.Payload, errorChan chan error, timeout time.Duration) {
+	sendPayloadFunc := func(requester Requester, graphName string, graph spirit.MessageGraph, payload spirit.Payload, responseChan chan GraphResponse, timeout time.Duration) {
 		defer func() {
 			if err := recover(); err != nil {
 				return
@@ -252,63 +256,65 @@ func (p *InletHTTP) handler(w http.ResponseWriter, r *http.Request) {
 		defer close(respChan)
 		defer close(errChan)
 
+		resp := GraphResponse{GraphName: graphName}
+
 		msgId, err := requester.Request(graph, payload, respChan, errChan)
 		if err != nil {
-			errChan <- err
+			resp.Error = err
 			return
 		}
 
 		defer requester.OnMessageProcessed(msgId)
 
 		select {
-		case respPayload := <-respChan:
-			{
-				responseChan <- respPayload
-			}
-		case respErr := <-errChan:
-			{
-				errorChan <- respErr
-			}
+		case resp.RespPayload = <-respChan:
+		case resp.Error = <-errChan:
 		case <-time.After(time.Duration(timeout)):
 			{
-				err = ERR_REQUEST_TIMEOUT.New(errors.Params{"graphName": graphName, "msgId": msgId})
-				errorChan <- err
+				resp.Error = ERR_REQUEST_TIMEOUT.New(errors.Params{"graphName": graphName, "msgId": msgId})
 			}
 		}
+		responseChan <- resp
 	}
 
 	for graphName, payload := range payloads {
 		graph, _ := graphs[graphName]
 
-		go sendPayloadFunc(p.requester, graphName, graph, *payload, responseChan, errorChan, timeout)
+		go sendPayloadFunc(p.requester, graphName, graph, *payload, responseChan, timeout)
 	}
 
-	respPayloads := map[string]spirit.Payload{}
-	errs := map[string]error{}
+	graphsResponse := map[string]GraphResponse{}
 
-	for graphName, _ := range payloads {
+	lenGraph := len(graphs)
+	for i := 0; i < lenGraph; i++ {
 		select {
-		case respPayload := <-responseChan:
+		case resp := <-responseChan:
 			{
-				respPayloads[graphName] = respPayload
-			}
-		case respErr := <-errorChan:
-			{
-				errs[graphName] = respErr
+				graphsResponse[resp.GraphName] = resp
 			}
 		case <-time.After(time.Duration(timeout) + time.Second):
 			{
-				err = ERR_REQUEST_TIMEOUT.New(errors.Params{"graphName": graphName})
-				errs[graphName] = err
+				continue
 			}
 		}
 	}
 
-	for _, respPayload := range respPayloads {
-		p.writeCookiesAndHeaders(respPayload, w, r)
+	for graphName, _ := range graphs {
+		if _, exist := graphsResponse[graphName]; !exist {
+			err := ERR_REQUEST_TIMEOUT.New(errors.Params{"graphName": graphName})
+			resp := GraphResponse{
+				GraphName: graphName,
+				Error:     err,
+			}
+			graphsResponse[graphName] = resp
+		}
 	}
 
-	p.respHandler(respPayloads, errs, w, r)
+	for _, graphResponse := range graphsResponse {
+		p.writeCookiesAndHeaders(graphResponse.RespPayload, w, r)
+	}
+
+	p.respHandler(graphsResponse, w, r)
 
 	return
 }
