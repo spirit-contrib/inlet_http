@@ -19,4 +19,6 @@ var (
 	ERR_GATHER_RESPONSE_TIMEOUT        = errors.TN(INLET_HTTP_ERR_NS, 8, "gather response timeout, graph: {{.graphName}}")
 
 	ERR_REQUEST_TIMEOUT_VALUE_FORMAT_WRONG = errors.TN(INLET_HTTP_ERR_NS, 9, "request timeout value format wrong, value: {{.value}}")
+
+	ERR_MARSHAL_STAT_DATA_FAILED = errors.TN(INLET_HTTP_ERR_NS, 10, "marshal stat data failed, err: {{.err}}")
 )

@@ -1,10 +1,12 @@
 package inlet_http
 
 import (
+	"encoding/json"
 	"io/ioutil"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-martini/martini"
@@ -31,6 +33,18 @@ const (
 	CMD_HTTP_COOKIES_SET = "CMD_HTTP_COOKIES_SET"
 )
 
+type GraphStat struct {
+	GraphName     string        `json:"-"`
+	RequestCount  int64         `json:"request_count"`
+	TimeoutCount  int64         `json:"timeout_count"`
+	ErrorCount    int64         `json:"error_count"`
+	TotalTimeCost time.Duration `json:"total_time_cost"`
+
+	ErrorRate          float64 `json:"error_rate"`
+	TimeoutRate        float64 `json:"timeout_rate"`
+	TimeCostPerRequest float64 `json:"time_cost_per_request"`
+}
+
 type NameValue struct {
 	Name  string `json:"name"`
 	Value string `json:"value"`
@@ -43,6 +57,11 @@ type InletHTTPRequestDecoder func(body []byte) (map[string]interface{}, error)
 
 type option func(*InletHTTP)
 
+var (
+	grapsStat  map[string]*GraphStat = make(map[string]*GraphStat)
+	statLocker sync.Mutex
+)
+
 type InletHTTP struct {
 	config         Config
 	requester      Requester
@@ -53,6 +72,8 @@ type InletHTTP struct {
 	payloadHook    InletHTTPRequestPayloadHook
 	timeout        time.Duration
 	timeoutHeader  string
+
+	statChan chan GraphStat
 }
 
 func (p *InletHTTP) Option(opts ...option) {
@@ -130,7 +151,51 @@ func (p *InletHTTP) Requester() Requester {
 	return p.requester
 }
 
-func (p *InletHTTP) Run(handlers ...martini.Handler) {
+func statCollector(graphStatChan chan GraphStat) {
+	for {
+		select {
+		case graphStat := <-graphStatChan:
+			{
+				go func(graphStat GraphStat) {
+					statLocker.Lock()
+					defer statLocker.Unlock()
+					if oldStat, exist := grapsStat[graphStat.GraphName]; !exist {
+						graphStat.ErrorRate = float64(graphStat.ErrorCount / graphStat.RequestCount)
+						graphStat.TimeCostPerRequest = float64(int64(graphStat.TotalTimeCost) / graphStat.RequestCount)
+						graphStat.TimeoutRate = float64(graphStat.TimeoutCount / graphStat.RequestCount)
+						grapsStat[graphStat.GraphName] = &graphStat
+					} else {
+						oldStat.GraphName += graphStat.GraphName
+						oldStat.ErrorCount += graphStat.ErrorCount
+						oldStat.RequestCount += graphStat.RequestCount
+						oldStat.TotalTimeCost += graphStat.TotalTimeCost
+						oldStat.TimeoutCount += graphStat.TimeoutCount
+						oldStat.ErrorRate = float64(graphStat.ErrorCount / graphStat.RequestCount)
+						oldStat.TimeCostPerRequest = float64(int64(graphStat.TotalTimeCost) / graphStat.RequestCount)
+						oldStat.TimeoutRate = float64(graphStat.TimeoutCount / graphStat.RequestCount)
+					}
+				}(graphStat)
+
+			}
+		case <-time.After(time.Second):
+		}
+	}
+}
+
+func statHandler(w http.ResponseWriter, r *http.Request) {
+	if data, e := json.MarshalIndent(grapsStat, " ", "  "); e != nil {
+		err := ERR_MARSHAL_STAT_DATA_FAILED.New(errors.Params{"err": e})
+		logs.Error(err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	} else {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(data)
+	}
+	return
+}
+
+func (p *InletHTTP) Run(path string, router func(martini.Router), middlerWares ...martini.Handler) {
 	if p.graphProvider == nil {
 		panic("graph provider is nil")
 	}
@@ -160,13 +225,13 @@ func (p *InletHTTP) Run(handlers ...martini.Handler) {
 
 	m := martini.Classic()
 
-	if handlers != nil {
-		for _, handler := range handlers {
-			m.Use(handler)
-		}
-	}
+	m.Group(path, router, middlerWares...)
 
-	m.Use(p.handler)
+	if p.config.EnableStat {
+		p.statChan = make(chan GraphStat, 1000)
+		go statCollector(p.statChan)
+		m.Get("/stat", statHandler)
+	}
 
 	if p.config.Address != "" {
 		m.RunOnAddr(p.config.Address)
@@ -175,7 +240,7 @@ func (p *InletHTTP) Run(handlers ...martini.Handler) {
 	}
 }
 
-func (p *InletHTTP) handler(w http.ResponseWriter, r *http.Request) {
+func (p *InletHTTP) Handler(w http.ResponseWriter, r *http.Request) {
 	var err error
 	var binBody []byte
 	if binBody, err = ioutil.ReadAll(r.Body); err != nil {
@@ -244,12 +309,24 @@ func (p *InletHTTP) handler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	sendPayloadFunc := func(requester Requester, graphName string, graph spirit.MessageGraph, payload spirit.Payload, responseChan chan GraphResponse, timeout time.Duration) {
+	sendPayloadFunc := func(requester Requester,
+		graphName string,
+		graph spirit.MessageGraph,
+		payload spirit.Payload,
+		responseChan chan GraphResponse,
+		statChan chan GraphStat,
+		timeout time.Duration) {
 		defer func() {
 			if err := recover(); err != nil {
 				return
 			}
 		}()
+
+		start := time.Now()
+
+		var grapStat GraphStat
+
+		var errCount, timeoutCout int64 = 0, 0
 
 		respChan := make(chan spirit.Payload)
 		errChan := make(chan error)
@@ -269,18 +346,38 @@ func (p *InletHTTP) handler(w http.ResponseWriter, r *http.Request) {
 		select {
 		case resp.RespPayload = <-respChan:
 		case resp.Error = <-errChan:
+			{
+				errCount = 1
+			}
 		case <-time.After(time.Duration(timeout)):
 			{
+				timeoutCout = 1
 				resp.Error = ERR_REQUEST_TIMEOUT.New(errors.Params{"graphName": graphName, "msgId": msgId})
 			}
 		}
+		end := time.Now()
+		timeCost := end.Sub(start)
+
 		responseChan <- resp
+
+		if statChan != nil {
+			grapStat.GraphName = graphName
+			grapStat.RequestCount = 1
+			grapStat.ErrorCount = errCount
+			grapStat.TimeoutCount = timeoutCout
+			grapStat.TotalTimeCost = timeCost / time.Millisecond
+
+			select {
+			case statChan <- grapStat:
+			case <-time.After(time.Second):
+			}
+		}
 	}
 
 	for graphName, payload := range payloads {
 		graph, _ := graphs[graphName]
 
-		go sendPayloadFunc(p.requester, graphName, graph, *payload, responseChan, timeout)
+		go sendPayloadFunc(p.requester, graphName, graph, *payload, responseChan, p.statChan, timeout)
 	}
 
 	graphsResponse := map[string]GraphResponse{}
