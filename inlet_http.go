@@ -2,6 +2,7 @@ package inlet_http
 
 import (
 	"encoding/json"
+	"fmt"
 	"io/ioutil"
 	"net/http"
 	"strconv"
@@ -34,15 +35,24 @@ const (
 )
 
 type GraphStat struct {
-	GraphName     string        `json:"-"`
-	RequestCount  int64         `json:"request_count"`
-	TimeoutCount  int64         `json:"timeout_count"`
-	ErrorCount    int64         `json:"error_count"`
-	TotalTimeCost time.Duration `json:"total_time_cost"`
+	GraphName    string `json:"-"`
+	RequestCount int64  `json:"request_count"`
+	TimeoutCount int64  `json:"timeout_count"`
+	ErrorCount   int64  `json:"error_count"`
 
-	ErrorRate          float64 `json:"error_rate"`
-	TimeoutRate        float64 `json:"timeout_rate"`
-	TimeCostPerRequest float64 `json:"time_cost_per_request"`
+	TotalTimeCost    time.Duration `json:"-"`
+	StrTotalTimeCost string        `json:"total_time_cost"`
+
+	ErrorRate          string `json:"error_rate"`
+	TimeoutRate        string `json:"timeout_rate"`
+	TimeCostPerRequest string `json:"time_cost_per_request"`
+}
+
+func (p *GraphStat) ReCalc() {
+	p.ErrorRate = fmt.Sprintf("%.2f", float64(p.ErrorCount/p.RequestCount))
+	p.TimeoutRate = fmt.Sprintf("%.2f", float64(p.TimeoutCount/p.RequestCount))
+	p.TimeCostPerRequest = fmt.Sprintf("%.2f", float64(float64(p.TotalTimeCost/time.Millisecond)/float64(p.RequestCount)))
+	p.StrTotalTimeCost = fmt.Sprintf("%.2f", float64(p.TotalTimeCost/time.Millisecond))
 }
 
 type NameValue struct {
@@ -160,9 +170,7 @@ func statCollector(graphStatChan chan GraphStat) {
 					statLocker.Lock()
 					defer statLocker.Unlock()
 					if oldStat, exist := grapsStat[graphStat.GraphName]; !exist {
-						graphStat.ErrorRate = float64(graphStat.ErrorCount / graphStat.RequestCount)
-						graphStat.TimeCostPerRequest = float64(int64(graphStat.TotalTimeCost) / graphStat.RequestCount)
-						graphStat.TimeoutRate = float64(graphStat.TimeoutCount / graphStat.RequestCount)
+						graphStat.ReCalc()
 						grapsStat[graphStat.GraphName] = &graphStat
 					} else {
 						oldStat.GraphName += graphStat.GraphName
@@ -170,9 +178,7 @@ func statCollector(graphStatChan chan GraphStat) {
 						oldStat.RequestCount += graphStat.RequestCount
 						oldStat.TotalTimeCost += graphStat.TotalTimeCost
 						oldStat.TimeoutCount += graphStat.TimeoutCount
-						oldStat.ErrorRate = float64(graphStat.ErrorCount / graphStat.RequestCount)
-						oldStat.TimeCostPerRequest = float64(int64(graphStat.TotalTimeCost) / graphStat.RequestCount)
-						oldStat.TimeoutRate = float64(graphStat.TimeoutCount / graphStat.RequestCount)
+						oldStat.ReCalc()
 					}
 				}(graphStat)
 
@@ -365,7 +371,7 @@ func (p *InletHTTP) Handler(w http.ResponseWriter, r *http.Request) {
 			grapStat.RequestCount = 1
 			grapStat.ErrorCount = errCount
 			grapStat.TimeoutCount = timeoutCout
-			grapStat.TotalTimeCost = timeCost / time.Millisecond
+			grapStat.TotalTimeCost = timeCost
 
 			select {
 			case statChan <- grapStat:
