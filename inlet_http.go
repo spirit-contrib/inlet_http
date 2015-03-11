@@ -43,7 +43,7 @@ type GraphStat struct {
 	TotalTimeCost   time.Duration `json:"-"`
 	MinTimeCost     time.Duration `json:"-"`
 	MaxTimeCost     time.Duration `json:"-"`
-	LastRequestTime time.Time     `json:"last_request_time"`
+	LastRequestTime string        `json:"last_request_time"`
 
 	StrTotalTimeCost string `json:"total_time_cost"`
 	StrMinTimeCost   string `json:"min_time_cost"`
@@ -390,7 +390,7 @@ func (p *InletHTTP) Handler(w http.ResponseWriter, r *http.Request) {
 			grapStat.ErrorCount = errCount
 			grapStat.TimeoutCount = timeoutCout
 			grapStat.TotalTimeCost = timeCost
-			grapStat.LastRequestTime = start
+			grapStat.LastRequestTime = start.Format("2006-01-02 15:04:05")
 
 			select {
 			case statChan <- grapStat:
