@@ -253,7 +253,7 @@ func (p *InletHTTP) Run(path string, router func(martini.Router), middlerWares .
 	if p.config.EnableStat {
 		p.statChan = make(chan GraphStat, 1000)
 		go statCollector(p.statChan)
-		m.Get("/stat", statHandler)
+		m.Get("/stat/json", statHandler)
 	}
 
 	if p.config.Address != "" {
