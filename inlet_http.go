@@ -40,8 +40,13 @@ type GraphStat struct {
 	TimeoutCount int64  `json:"timeout_count"`
 	ErrorCount   int64  `json:"error_count"`
 
-	TotalTimeCost    time.Duration `json:"-"`
-	StrTotalTimeCost string        `json:"total_time_cost"`
+	TotalTimeCost time.Duration `json:"-"`
+	MinTimeCost   time.Duration `json:"-"`
+	MaxTimeCost   time.Duration `json:"-"`
+
+	StrTotalTimeCost string `json:"total_time_cost"`
+	StrMinTimeCost   string `json:"min_time_cost"`
+	StrMaxTimeCost   string `json:"max_time_cost"`
 
 	ErrorRate          string `json:"error_rate"`
 	TimeoutRate        string `json:"timeout_rate"`
@@ -53,6 +58,9 @@ func (p *GraphStat) ReCalc() {
 	p.TimeoutRate = fmt.Sprintf("%.2f", float64(p.TimeoutCount/p.RequestCount))
 	p.TimeCostPerRequest = fmt.Sprintf("%.2f", float64(float64(p.TotalTimeCost/time.Millisecond)/float64(p.RequestCount)))
 	p.StrTotalTimeCost = fmt.Sprintf("%.2f", float64(p.TotalTimeCost/time.Millisecond))
+	p.StrMinTimeCost = fmt.Sprintf("%.2f", float64(p.MinTimeCost/time.Millisecond))
+	p.StrMaxTimeCost = fmt.Sprintf("%.2f", float64(p.MaxTimeCost/time.Millisecond))
+
 }
 
 type NameValue struct {
@@ -170,6 +178,8 @@ func statCollector(graphStatChan chan GraphStat) {
 					statLocker.Lock()
 					defer statLocker.Unlock()
 					if oldStat, exist := grapsStat[graphStat.GraphName]; !exist {
+						graphStat.MinTimeCost = graphStat.TotalTimeCost
+						graphStat.MaxTimeCost = graphStat.TotalTimeCost
 						graphStat.ReCalc()
 						grapsStat[graphStat.GraphName] = &graphStat
 					} else {
@@ -178,6 +188,13 @@ func statCollector(graphStatChan chan GraphStat) {
 						oldStat.RequestCount += graphStat.RequestCount
 						oldStat.TotalTimeCost += graphStat.TotalTimeCost
 						oldStat.TimeoutCount += graphStat.TimeoutCount
+
+						if graphStat.TotalTimeCost < oldStat.MinTimeCost {
+							oldStat.MinTimeCost = graphStat.TotalTimeCost
+						} else if graphStat.TotalTimeCost > oldStat.MaxTimeCost {
+							oldStat.MaxTimeCost = graphStat.TotalTimeCost
+						}
+
 						oldStat.ReCalc()
 					}
 				}(graphStat)
