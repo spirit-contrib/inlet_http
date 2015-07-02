@@ -93,6 +93,8 @@ type InletHTTP struct {
 	timeoutHeader  string
 
 	statChan chan GraphStat
+
+	martini *martini.ClassicMartini
 }
 
 func (p *InletHTTP) Option(opts ...option) {
@@ -163,6 +165,8 @@ func NewInletHTTP(opts ...option) *InletHTTP {
 		inletHTTP.requester = NewClassicRequester()
 	}
 
+	inletHTTP.martini = martini.Classic()
+
 	return inletHTTP
 }
 
@@ -219,7 +223,11 @@ func statHandler(w http.ResponseWriter, r *http.Request) {
 	return
 }
 
-func (p *InletHTTP) Run(path string, router func(martini.Router), middlerWares ...martini.Handler) {
+func (p *InletHTTP) Group(path string, router func(martini.Router), middlerWares ...martini.Handler) {
+	p.martini.Group(path, router, middlerWares...)
+}
+
+func (p *InletHTTP) Run() {
 	if p.graphProvider == nil {
 		panic("graph provider is nil")
 	}
@@ -247,20 +255,16 @@ func (p *InletHTTP) Run(path string, router func(martini.Router), middlerWares .
 		p.timeout = REQUEST_TIMEOUT
 	}
 
-	m := martini.Classic()
-
-	m.Group(path, router, middlerWares...)
-
 	if p.config.EnableStat {
 		p.statChan = make(chan GraphStat, 1000)
 		go statCollector(p.statChan)
-		m.Get("/stat/json", statHandler)
+		p.martini.Get("/stat/json", statHandler)
 	}
 
 	if p.config.Address != "" {
-		m.RunOnAddr(p.config.Address)
+		p.martini.RunOnAddr(p.config.Address)
 	} else {
-		m.Run()
+		p.martini.Run()
 	}
 }
 
