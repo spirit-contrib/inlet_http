@@ -29,6 +29,7 @@ const (
 const (
 	CTX_HTTP_COOKIES = "CTX_HTTP_COOKIES"
 	CTX_HTTP_HEADERS = "CTX_HTTP_HEADERS"
+	CTX_HTTP_RANGE   = "CTX_HTTP_RANGE"
 
 	CMD_HTTP_HEADERS_SET = "CMD_HTTP_HEADERS_SET"
 	CMD_HTTP_COOKIES_SET = "CMD_HTTP_COOKIES_SET"
@@ -91,6 +92,7 @@ type InletHTTP struct {
 	payloadHook    InletHTTPRequestPayloadHook
 	timeout        time.Duration
 	timeoutHeader  string
+	rangeHeader    string
 
 	statChan chan GraphStat
 
@@ -154,6 +156,12 @@ func SetTimeout(millisecond int64) option {
 func SetTimeoutHeader(header string) option {
 	return func(f *InletHTTP) {
 		f.timeoutHeader = strings.TrimSpace(header)
+	}
+}
+
+func SetRangeHeader(header string) option {
+	return func(f *InletHTTP) {
+		f.rangeHeader = strings.TrimSpace(header)
 	}
 }
 
@@ -304,11 +312,20 @@ func (p *InletHTTP) Handler(w http.ResponseWriter, r *http.Request) {
 
 	payloads := map[string]*spirit.Payload{}
 
+	isMutil := len(graphs) > 1
+
 	for graphName, _ := range graphs {
 
 		payload := new(spirit.Payload)
 		payload.SetContent(mapContent)
 		payload.SetContext(CTX_HTTP_COOKIES, cookies)
+
+		if !isMutil {
+			rangeOpts := strings.TrimSpace(r.Header.Get(p.rangeHeader))
+			if rangeOpts != "" {
+				payload.SetContext(CTX_HTTP_RANGE, rangeOpts)
+			}
+		}
 
 		if p.payloadHook != nil {
 			if e := p.payloadHook(r, graphName, binBody, payload); e != nil {
