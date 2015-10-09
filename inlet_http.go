@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -83,16 +84,17 @@ var (
 )
 
 type InletHTTP struct {
-	config         Config
-	requester      Requester
-	graphProvider  GraphProvider
-	respHandler    InletHTTPResponseHandler
-	errRespHandler InletHTTPErrorResponseHandler
-	requestDecoder InletHTTPRequestDecoder
-	payloadHook    InletHTTPRequestPayloadHook
-	timeout        time.Duration
-	timeoutHeader  string
-	rangeHeader    string
+	config             Config
+	requester          Requester
+	graphProvider      GraphProvider
+	respHandler        InletHTTPResponseHandler
+	errRespHandler     InletHTTPErrorResponseHandler
+	requestDecoder     InletHTTPRequestDecoder
+	payloadHook        InletHTTPRequestPayloadHook
+	timeout            time.Duration
+	timeoutHeader      string
+	rangeHeader        string
+	passThroughHeaders map[string]bool
 
 	statChan chan GraphStat
 
@@ -165,15 +167,32 @@ func SetRangeHeader(header string) option {
 	}
 }
 
+func SetPassThroughHeaders(headers ...string) option {
+	return func(f *InletHTTP) {
+		for _, header := range headers {
+			f.passThroughHeaders[header] = true
+		}
+	}
+}
+
+func SetLogger(logger *log.Logger) option {
+	return func(f *InletHTTP) {
+		if logger != nil {
+			f.martini.Map(logger)
+		}
+	}
+}
+
 func NewInletHTTP(opts ...option) *InletHTTP {
 	inletHTTP := new(InletHTTP)
-	inletHTTP.Option(opts...)
+	inletHTTP.passThroughHeaders = make(map[string]bool)
+	inletHTTP.martini = martini.Classic()
 
 	if inletHTTP.requester == nil {
 		inletHTTP.requester = NewClassicRequester()
 	}
 
-	inletHTTP.martini = martini.Classic()
+	inletHTTP.Option(opts...)
 
 	return inletHTTP
 }
@@ -310,6 +329,15 @@ func (p *InletHTTP) Handler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	passThroughHeaders := map[string]string{}
+
+	for header, _ := range p.passThroughHeaders {
+		v := r.Header.Get(header)
+		if v != "" {
+			passThroughHeaders[header] = strings.TrimSpace(v)
+		}
+	}
+
 	payloads := map[string]*spirit.Payload{}
 
 	isMutil := len(graphs) > 1
@@ -319,6 +347,7 @@ func (p *InletHTTP) Handler(w http.ResponseWriter, r *http.Request) {
 		payload := new(spirit.Payload)
 		payload.SetContent(mapContent)
 		payload.SetContext(CTX_HTTP_COOKIES, cookies)
+		payload.SetContext(CTX_HTTP_HEADERS, passThroughHeaders)
 
 		if !isMutil {
 			rangeOpts := strings.TrimSpace(r.Header.Get(p.rangeHeader))
