@@ -547,7 +547,7 @@ func (p *InletHTTP) writeCookiesAndHeaders(payload spirit.Payload, w http.Respon
 }
 
 func (p *InletHTTP) Nothing(payload *spirit.Payload) (result interface{}, err error) {
-	return nil, nil
+	return payload.GetContent(), nil
 }
 
 func (p *InletHTTP) CallBack(payload *spirit.Payload) (result interface{}, err error) {
