@@ -55,8 +55,6 @@ func (p *ClassicRequester) Request(graph spirit.MessageGraph, payload spirit.Pay
 		return
 	}
 
-	graph.AddAddressToHead(spirit.MessageAddress{"localchan", "localchan://inlet_http/empty/nothing"})
-
 	msgId = msg.Id()
 
 	p.addMessageChan(msgId, payloadRespChan, errResp)
