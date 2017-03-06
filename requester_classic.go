@@ -7,6 +7,11 @@ import (
 	"github.com/gogap/errors"
 	"github.com/gogap/logs"
 	"github.com/gogap/spirit"
+	"github.com/spirit-contrib/receivers/localchan"
+)
+
+var (
+	DefaultMessageChanSize = 1000
 )
 
 type respChan struct {
@@ -17,7 +22,7 @@ type respChan struct {
 type ClassicRequester struct {
 	respChans map[string]respChan
 
-	senderFactory spirit.MessageSenderFactory
+	messageChan chan spirit.ComponentMessage
 
 	timeout time.Duration
 
@@ -25,22 +30,15 @@ type ClassicRequester struct {
 }
 
 func NewClassicRequester() Requester {
+	messageChan := make(chan spirit.ComponentMessage, DefaultMessageChanSize)
+
+	localchan.RegisterMessageChan("localchan://inlet_http/empty/nothing", messageChan)
+
 	return &ClassicRequester{
-		respChans:     make(map[string]respChan),
-		senderFactory: spirit.NewDefaultMessageSenderFactory(),
-		timeout:       REQUEST_TIMEOUT,
+		messageChan: messageChan,
+		respChans:   make(map[string]respChan),
+		timeout:     REQUEST_TIMEOUT,
 	}
-}
-
-func (p *ClassicRequester) SetMessageSenderFactory(factory spirit.MessageSenderFactory) {
-	if factory == nil {
-		panic("message sender factory could not be nil")
-	}
-	p.senderFactory = factory
-}
-
-func (p *ClassicRequester) GetMessageSenderFactory() spirit.MessageSenderFactory {
-	return p.senderFactory
 }
 
 func (p *ClassicRequester) SetTimeout(timeout time.Duration) {
@@ -57,18 +55,13 @@ func (p *ClassicRequester) Request(graph spirit.MessageGraph, payload spirit.Pay
 		return
 	}
 
-	firstAddress := graph["1"]
-	var sender spirit.MessageSender
-
-	if sender, err = p.senderFactory.NewSender(firstAddress.Type); err != nil {
-		return
-	}
+	graph.AddAddressToHead(spirit.MessageAddress{"localchan", "localchan://inlet_http/empty/nothing"})
 
 	msgId = msg.Id()
 
 	p.addMessageChan(msgId, payloadRespChan, errResp)
 
-	err = sender.Send(firstAddress.Url, msg)
+	p.messageChan <- msg
 
 	return
 }

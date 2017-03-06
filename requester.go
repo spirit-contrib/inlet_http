@@ -11,8 +11,6 @@ type Requester interface {
 	OnMessageReceived(payload spirit.Payload)
 	OnMessageError(payload spirit.Payload)
 	OnMessageProcessed(messageId string)
-	SetMessageSenderFactory(factory spirit.MessageSenderFactory)
-	GetMessageSenderFactory() spirit.MessageSenderFactory
 	SetTimeout(timeout time.Duration)
 	GetTimeout() time.Duration
 }
